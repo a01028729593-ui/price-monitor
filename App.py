@@ -1,5 +1,6 @@
 import time
 import re
+import json
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -8,12 +9,10 @@ import streamlit as st
 st.set_page_config(page_title="네이버 쇼핑 최저가 비교", page_icon="🛍️", layout="centered")
 st.title("🛍️ 개별 상품 최저가 비교 알리미")
 
-st.write("비교할 상품 개수를 설정한 뒤, 아래 입력 칸에 각각의 URL을 나누어 입력하세요.")
+st.info("💡 **팁:** Google 광고 링크(`google.com/aclk...`) 대신, 상품 페이지에 직접 들어간 뒤 주소창의 진짜 네이버 주소를 복사해 넣으면 수집 성공률이 훨씬 높아집니다.")
 
-# 1. 비교할 상품 개수 선택 (2개 ~ 5개)
 num_products = st.number_input("비교할 상품 개수 (2~5개)", min_value=2, max_value=5, value=2, step=1)
 
-# 2. 개별 입력 칸 생성
 urls = []
 default_example_url = "https://m.shopping.naver.com/window-products/cu/11764306439"
 
@@ -22,17 +21,11 @@ for i in range(int(num_products)):
     url_input = st.text_input(
         f"상품 #{i+1} URL",
         value=init_val,
-        placeholder="https://m.shopping.naver.com/...",
+        placeholder="https://smartstore.naver.com/...",
         key=f"product_url_{i}"
     )
-    
-    # 입력된 텍스트 중 유효한 http(s) 주소만 정제
     if url_input.strip():
-        match = re.search(r'https?://[^\s,"]+', url_input.strip())
-        if match:
-            urls.append(match.group(0).rstrip('.)]'))
-
-st.caption(f"✅ 현재 **{len(urls)}개**의 유효한 상품 URL이 입력되었습니다.")
+        urls.append(url_input.strip())
 
 col1, col2 = st.columns(2)
 with col1:
@@ -41,22 +34,41 @@ with col2:
     ntfy_topic = st.text_input("ntfy 알림 채널명", value="my_milk_alert_777")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://search.shopping.naver.com/"
+    "Accept-Language": "ko-KR,ko;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate"
 }
 
-def get_naver_product_info(url):
-    """다양한 네이버 상품 페이지 HTML에서 가격 수집"""
+def clean_target_url(raw_input_url):
+    """구글 광고 링크 등 리다이렉트 주소에서 진짜 URL을 추출하고 정제"""
+    match = re.search(r'https?://[^\s,"]+', raw_input_url)
+    if not match:
+        return raw_input_url
+    url = match.group(0).rstrip('.)]')
+    
+    # google ad추적 주소 내부의 진짜 url 추출 시도
+    if "google.com/aclk" in url or "adurl=" in url:
+        adurl_match = re.search(r'adurl=([^&]+)', url)
+        if adurl_match:
+            import urllib.parse
+            return urllib.parse.unquote(adurl_match.group(1))
+    return url
+
+def get_naver_product_info(raw_url):
+    url = clean_target_url(raw_url)
     try:
         session = requests.Session()
         res = session.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
-        res.raise_for_status()
+        
+        if res.status_code != 200:
+            return {"title": f"접속 실패 (HTTP {res.status_code})", "price": None, "url": url}
+            
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
-        # 1. 상품 제목
+        # 1. 제목 추출
         title = "네이버 쇼핑 상품"
         og_title = soup.find("meta", property="og:title")
         if og_title and og_title.get("content"):
@@ -64,35 +76,47 @@ def get_naver_product_info(url):
 
         price = None
 
-        # 2. 메타 태그 검색
+        # 2. OpenGraph / Meta 태그 우선 수집
         for prop in ["og:price:amount", "product:price:amount", "product:sale_price:amount"]:
             meta = soup.find("meta", property=prop)
             if meta and meta.get("content"):
                 digits = re.sub(r"[^\d]", "", meta["content"])
-                if digits:
+                if digits and int(digits) >= 100:
                     price = int(digits)
                     break
 
-        # 3. JSON 구조 내부 가격 파싱
+        # 3. ld+json 구조 파싱
         if price is None:
-            matches = re.findall(r'"(?:discountedPrice|salePrice|discountPrice|rawPrice|benefitsViewPrice|mobileDiscountedPrice)":\s*(\d+)', html)
+            scripts = soup.find_all("script", type="application/ld+json")
+            for script in scripts:
+                try:
+                    data = json.loads(script.string)
+                    if isinstance(data, dict):
+                        offers = data.get("offers", {})
+                        if isinstance(offers, dict) and "price" in offers:
+                            price = int(offers["price"])
+                            break
+                        elif isinstance(offers, list) and len(offers) > 0 and "price" in offers[0]:
+                            price = int(offers[0]["price"])
+                            break
+                except Exception:
+                    pass
+
+        # 4. 정규식 JSON 키값 매칭
+        if price is None:
+            matches = re.findall(r'"(?:discountedPrice|salePrice|discountPrice|rawPrice|benefitsViewPrice|mobileDiscountedPrice|price)":\s*(\d+)', html)
             if matches:
                 valid_prices = [int(p) for p in matches if 100 <= int(p) <= 10000000]
                 if valid_prices:
                     price = min(valid_prices)
 
-        # 4. HTML 클래스 파싱
         if price is None:
-            price_tags = soup.select("._1LY7DqebLu, ._228w0AZ_e3, ._2HP-hn-bWZ, .total_price, .price, .discount_price")
-            for tag in price_tags:
-                digits = re.sub(r"[^\d]", "", tag.get_text())
-                if digits and int(digits) >= 100:
-                    price = int(digits)
-                    break
+            return {"title": title, "price": None, "url": url, "err": "가격을 찾을 수 없음"}
 
-        return {"title": title, "price": price, "url": url}
-    except Exception:
-        return {"title": "수집 불가 (URL 확인 필요)", "price": None, "url": url}
+        return {"title": title, "price": price, "url": url, "err": None}
+
+    except Exception as e:
+        return {"title": "수집 에러", "price": None, "url": url, "err": str(e)}
 
 def send_push(topic, title, message):
     try:
@@ -107,9 +131,9 @@ def send_push(topic, title, message):
 
 if st.button("📊 실시간 가격 비교하기", use_container_width=True):
     if not urls:
-        st.warning("비교할 URL을 최소 1개 이상 입력해 주세요.")
+        st.warning("비교할 URL을 입력해 주세요.")
     else:
-        with st.spinner(f"{len(urls)}개 상품 실시간 데이터 수집 중..."):
+        with st.spinner(f"{len(urls)}개 상품 분석 중..."):
             results = [get_naver_product_info(u) for u in urls]
             valid_items = [r for r in results if r["price"] is not None]
 
@@ -128,12 +152,15 @@ if st.button("📊 실시간 가격 비교하기", use_container_width=True):
                 table_data = []
                 for item in results:
                     is_lowest = "🏆 최저가" if (item["price"] and item["price"] == min_item["price"]) else ""
+                    status_str = f"{item['price']:,}원" if item["price"] else "수집 실패"
                     table_data.append({
                         "상태": is_lowest,
                         "상품명": item["title"],
-                        "가격": f"{item['price']:,}원" if item["price"] else "수집 실패",
+                        "가격": status_str,
                         "링크": item["url"]
                     })
                 st.dataframe(pd.DataFrame(table_data), use_container_width=True)
             else:
-                st.error("입력한 URL에서 가격 정보를 불러오지 못했습니다. 올바른 상품 페이지 주소인지 확인해 주세요.")
+                st.error("입력한 URL에서 가격 정보를 읽지 못했습니다.")
+                for r in results:
+                    st.caption(f"❌ {r['url'][:60]}... -> {r['title']}")
