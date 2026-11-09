@@ -24,10 +24,10 @@ urls_input = st.text_area(
     help="모바일 화면에서 URL이 긴 탓에 여러 줄로 끊겨 보여도 알아서 주소별로 분할 인식합니다."
 )
 
-# 💡 핵심 개선: 정규식을 사용해 텍스트 전체에서 올바른 URL 형태만 정확하게 추출/분할
+# 정규식을 사용해 유효한 URL 자동 추출
 extracted_urls = re.findall(r'https?://[^\s,]+', urls_input)
 
-# 인식된 URL 개수 실시간 안내
+# 인식된 URL 개수 안내
 if extracted_urls:
     st.caption(f"✅ 총 **{len(extracted_urls)}개**의 유효한 URL 주소가 인식되었습니다.")
 else:
@@ -75,65 +75,4 @@ def get_naver_product_info(url: str):
                 if valid_prices:
                     price = min(valid_prices)
 
-        # 가격 파싱 (3차: HTML selector)
-        if price is None:
-            selectors = ["._1LY7DqebLu", "._228w0AZ_e3", "._2HP-hn-bWZ", ".total_price", ".price"]
-            for sel in selectors:
-                tag = soup.select_one(sel)
-                if tag:
-                    digits = re.sub(r"[^\d]", "", tag.get_text())
-                    if digits:
-                        price = int(digits)
-                        break
-
-        return {"title": title, "price": price, "url": url}
-    except Exception:
-        return {"title": "수집 실패", "price": None, "url": url}
-
-def send_push(topic: str, title: str, message: str):
-    """ntfy 알림 전송"""
-    try:
-        url = f"https://ntfy.sh/{topic}"
-        requests.post(
-            url,
-            data=message.encode('utf-8'),
-            headers={
-                "Title": title.encode('utf-8').decode('latin-1'),
-                "Priority": "high",
-                "Tags": "tada,shopping"
-            },
-            timeout=5
-        )
-    except Exception:
-        pass
-
-# 2. 가격 비교 실행 버튼
-if st.button("📊 실시간 가격 비교하기", use_container_width=True):
-    if not extracted_urls:
-        st.warning("분석할 URL이 없습니다. 주소를 다시 확인해 주세요.")
-    else:
-        with st.spinner(f"{len(extracted_urls)}개 상품 가격 데이터 수집 중..."):
-            results = []
-            for url in extracted_urls:
-                info = get_naver_product_info(url)
-                results.append(info)
-            
-            # 성공한 상품들 중 가격 비교
-            valid_items = [r for r in results if r["price"] is not None]
-            
-            if valid_items:
-                # 최저가 상품 탐색
-                min_item = min(valid_items, key=lambda x: x["price"])
-                
-                st.subheader("👑 비교 결과: 최저가 상품")
-                st.success(
-                    f"**[{min_item['title']}]**\n\n"
-                    f"💰 최저 가격: **{min_item['price']:,}원** (목표가: {target_price:,}원)"
-                )
-                
-                # 목표가 도달 시 알림
-                if min_item["price"] <= target_price:
-                    st.balloons()
-                    msg = f"🏆 최저가 달성!\n상품: {min_item['title']}\n가격: {min_item['price']:,}원"
-                    send_push(ntfy_topic, "🎉 최저가 상품 발견!", msg)
-                    st.info("📲 ntfy 스마트폰 푸시 알림
+        #
