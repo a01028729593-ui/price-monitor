@@ -114,4 +114,26 @@ if st.button("📊 실시간 가격 비교하기", use_container_width=True):
             valid_items = [r for r in results if r["price"] is not None]
 
             if valid_items:
-                min_item = min(valid_
+                min_item = min(valid_items, key=lambda x: x["price"])
+                st.subheader("👑 최저가 상품")
+                st.success(f"**[{min_item['title']}]**\n\n💰 최저가: **{min_item['price']:,}원** (목표가: {target_price:,}원)")
+
+                if min_item["price"] <= target_price:
+                    st.balloons()
+                    msg = f"🏆 최저가 달성!\n{min_item['title']}\n가격: {min_item['price']:,}원"
+                    send_push(ntfy_topic, "🎉 최저가 달성!", msg)
+                    st.info("📲 ntfy 푸시 알림을 발송했습니다.")
+
+                st.subheader("📋 전체 비교표")
+                table_data = []
+                for item in results:
+                    is_lowest = "🏆 최저가" if (item["price"] and item["price"] == min_item["price"]) else ""
+                    table_data.append({
+                        "상태": is_lowest,
+                        "상품명": item["title"],
+                        "가격": f"{item['price']:,}원" if item["price"] else "수집 실패",
+                        "링크": item["url"]
+                    })
+                st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+            else:
+                st.error("입력한 URL에서 가격 정보를 불러오지 못했습니다. 올바른 상품 페이지 주소인지 확인해 주세요.")
