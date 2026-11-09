@@ -43,36 +43,4 @@ HEADERS = {
     )
 }
 
-def get_naver_product_info(url: str):
-    """단일 URL에서 상품명과 가격을 수집하는 함수"""
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        html_text = response.text
-        soup = BeautifulSoup(html_text, "html.parser")
-        
-        # 상품 제목 파싱
-        title = "상품 (제목 읽기 불가)"
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            title = og_title["content"].strip()
-
-        # 가격 파싱 (1차: OpenGraph)
-        price = None
-        for meta_prop in ["og:price:amount", "product:price:amount"]:
-            meta_tag = soup.find("meta", property=meta_prop)
-            if meta_tag and meta_tag.get("content"):
-                digits = re.sub(r"[^\d]", "", meta_tag["content"])
-                if digits:
-                    price = int(digits)
-                    break
-
-        # 가격 파싱 (2차: JSON regex)
-        if price is None:
-            price_matches = re.findall(r'"(?:discountedPrice|salePrice|price|rawPrice)":\s*(\d+)', html_text)
-            if price_matches:
-                valid_prices = [int(p) for p in price_matches if int(p) >= 500]
-                if valid_prices:
-                    price = min(valid_prices)
-
-        #
+def get_naver_product_info(url:
