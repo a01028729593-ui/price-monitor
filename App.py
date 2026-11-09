@@ -9,7 +9,7 @@ import streamlit as st
 st.set_page_config(page_title="네이버 쇼핑 최저가 비교", page_icon="🛍️", layout="centered")
 st.title("🛍️ 개별 상품 최저가 비교 알리미")
 
-st.info("💡 브랜드스토어(`brand.naver.com`) 및 스마트스토어 주소의 복잡한 추적 파라미터를 자동으로 정제하여 수집합니다.")
+st.info("💡 **안내:** 브랜드스토어 및 스마트스토어 주소의 복잡한 추적 파라미터를 자동 정제하여 순수 상품 주소로 수집합니다.")
 
 num_products = st.number_input("비교할 상품 개수 (2~5개)", min_value=2, max_value=5, value=2, step=1)
 
@@ -33,7 +33,6 @@ with col1:
 with col2:
     ntfy_topic = st.text_input("ntfy 알림 채널명", value="my_milk_alert_777")
 
-# 보안 차단 우회용 PC/모바일 브라우저 헤더
 HEADERS_MOBILE = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -49,20 +48,20 @@ HEADERS_PC = {
 }
 
 def clean_url(raw_url):
-    """Google 광고 및 네이버 브랜드스토어 추적 파라미터(?NaPm=...) 자동 제거"""
+    """Google 광고 및 네이버 브랜드스토어/스마트스토어 추적 파라미터(?nl-query=...) 자동 제거"""
     match = re.search(r'https?://[^\s,"]+', raw_url)
     if not match:
         return raw_url
     url = match.group(0).rstrip('.)]')
     
-    # 구글 광고 URL 정제
+    # 구글 광고 주소 정제
     if "google.com/aclk" in url or "adurl=" in url:
         adurl_match = re.search(r'adurl=([^&]+)', url)
         if adurl_match:
             import urllib.parse
             url = urllib.parse.unquote(adurl_match.group(1))
             
-    # 네이버 상품 번호 기반 순수 URL 정제 (/products/12345678)
+    # 네이버 상품 번호 기준 순수 URL 추출 (/products/12345678)
     product_match = re.search(r'(https?://[^/]+/products/\d+)', url)
     if product_match:
         url = product_match.group(1)
@@ -70,7 +69,6 @@ def clean_url(raw_url):
     return url
 
 def fetch_html(url, headers):
-    """HTTP 요청 처리 (429 발생 시 대기 재시도)"""
     session = requests.Session()
     res = session.get(url, headers=headers, timeout=10, allow_redirects=True)
     if res.status_code == 429:
@@ -81,7 +79,6 @@ def fetch_html(url, headers):
 def parse_price_and_title(html):
     soup = BeautifulSoup(html, "html.parser")
     
-    # 1. 제목 추출
     title = "네이버 쇼핑 상품"
     og_title = soup.find("meta", property="og:title")
     if og_title and og_title.get("content"):
@@ -89,7 +86,7 @@ def parse_price_and_title(html):
 
     price = None
 
-    # 2. OpenGraph / Meta 태그 1차 수집
+    # 1. OpenGraph 메타 태그
     for prop in ["og:price:amount", "product:price:amount", "product:sale_price:amount"]:
         meta = soup.find("meta", property=prop)
         if meta and meta.get("content"):
@@ -98,7 +95,7 @@ def parse_price_and_title(html):
                 price = int(digits)
                 break
 
-    # 3. JSON-LD 구조 2차 수집
+    # 2. JSON-LD 파싱
     if price is None:
         scripts = soup.find_all("script", type="application/ld+json")
         for script in scripts:
@@ -115,7 +112,7 @@ def parse_price_and_title(html):
             except Exception:
                 pass
 
-    # 4. 브랜드스토어/스마트스토어 JSON 정규식 3차 수집
+    # 3. JSON 정규식 수집
     if price is None:
         matches = re.findall(r'"(?:discountedPrice|salePrice|discountPrice|rawPrice|benefitsViewPrice|mobileDiscountedPrice|price|rawDiscountedPrice)":\s*(\d+)', html)
         if matches:
@@ -128,7 +125,7 @@ def parse_price_and_title(html):
 def get_naver_product_info(raw_url):
     url = clean_url(raw_url)
     try:
-        # 1차 시도: 모바일 페이지 요청 (m.brand.naver.com / m.smartstore.naver.com)
+        # 1차: 모바일 URL 요청
         mobile_url = url.replace("://brand.naver.com", "://m.brand.naver.com").replace("://smartstore.naver.com", "://m.smartstore.naver.com")
         res = fetch_html(mobile_url, HEADERS_MOBILE)
         
@@ -137,23 +134,23 @@ def get_naver_product_info(raw_url):
             if price is not None:
                 return {"title": title, "price": price, "url": url, "reason": "성공"}
 
-        # 2차 시도: PC 원본 페이지 요청
+        # 2차: PC URL 요청
         res_pc = fetch_html(url, HEADERS_PC)
         if res_pc.status_code == 429:
-            return {"title": "요청 제한", "price": None, "url": url, "reason": "HTTP 429 (네이버 서버 트래픽 제한: 1~2분 후 재시도)"}
+            return {"title": "요청 제한", "price": None, "url": url, "reason": "HTTP 429 (1~2분 후 다시 시도)"}
         elif res_pc.status_code == 403:
-            return {"title": "접속 거부", "price": None, "url": url, "reason": "HTTP 403 (네이버 보안 차단)"}
+            return {"title": "접속 거부", "price": None, "url": url, "reason": "HTTP 403 (보안 차단)"}
         elif res_pc.status_code != 200:
-            return {"title": "접속 실패", "price": None, "url": url, "reason": f"HTTP 에러 코드 {res_pc.status_code}"}
+            return {"title": "접속 실패", "price": None, "url": url, "reason": f"HTTP 에러 {res_pc.status_code}"}
 
         title, price = parse_price_and_title(res_pc.text)
         if price is None:
-            return {"title": title, "price": None, "url": url, "reason": "가격 데이터를 태그에서 발견하지 못함"}
+            return {"title": title, "price": None, "url": url, "reason": "가격을 찾을 수 없음"}
 
         return {"title": title, "price": price, "url": url, "reason": "성공"}
 
     except Exception as e:
-        return {"title": "수집 에러", "price": None, "url": url, "reason": f"네트워크 에러 ({str(e)})"}
+        return {"title": "수집 에러", "price": None, "url": url, "reason": f"네트워크 오류 ({str(e)})"}
 
 def send_push(topic, title, message):
     try:
@@ -175,7 +172,7 @@ if st.button("📊 실시간 가격 비교하기", use_container_width=True):
         
         for idx, u in enumerate(urls):
             if idx > 0:
-                time.sleep(1.5)  # 서버 차단 방지용 1.5초 딜레이
+                time.sleep(1.5)
             info = get_naver_product_info(u)
             results.append(info)
             progress_bar.progress((idx + 1) / len(urls))
